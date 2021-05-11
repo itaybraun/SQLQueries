@@ -1,0 +1,137 @@
+/*******************************
+Script: Query Cache Analysis
+Based on: https://www.sqlshack.com/searching-the-sql-server-query-plan-cache/  
+********************************/
+
+/*************
+To Clear the Proceure Cache run: DBCC FREEPROCCACHE 
+Documentation: https://docs.microsoft.com/en-us/sql/t-sql/database-console-commands/dbcc-freeproccache-transact-sql?view=sql-server-ver15
+*****************/
+--DBCC FREEPROCCACHE 
+
+/***************************************************
+Desc: Uses the DMV sys.dm_exec_cached_plans to return a row for each query plan that is cached by SQL Server for faster query execution. You can use this dynamic
+management view to find cached query plans, cached query text, the amount of memory taken by cached plans, and the reuse count of the cached plans.
+Azure SQL: see documentation for unique behaviour (columns who return null). 
+
+Documentation: 
+ - sys.dm_exec_cached_plans (DMV): https://docs.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-exec-cached-plans-transact-sql?view=sql-server-ver15
+ - sys.dm_exec_sql_text (Function): https://docs.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-exec-sql-text-transact-sql?view=sql-server-ver15
+****************************************************/
+SELECT cplan.usecounts, cplan.objtype, qtext.text, qplan.query_plan
+FROM sys.dm_exec_cached_plans AS cplan
+CROSS APPLY sys.dm_exec_sql_text(plan_handle) AS qtext
+CROSS APPLY sys.dm_exec_query_plan(plan_handle) AS qplan
+ORDER BY cplan.usecounts DESC
+
+/*****************************
+Desc: Show top queries (by CPU, IO...) from the cache
+Notice the "execution_count"column as an indicator how many recompiles occur.
+**************************/
+SELECT TOP 10
+		databases.name,
+	dm_exec_sql_text.text AS TSQL_Text,
+	dm_exec_query_stats.creation_time, 
+	dm_exec_query_stats.execution_count,
+	dm_exec_query_stats.total_worker_time AS total_cpu_time,
+	dm_exec_query_stats.total_elapsed_time, 
+	dm_exec_query_stats.total_logical_reads, 
+	dm_exec_query_stats.total_physical_reads, 
+	dm_exec_query_plan.query_plan
+FROM sys.dm_exec_query_stats 
+CROSS APPLY sys.dm_exec_sql_text(dm_exec_query_stats.plan_handle)
+CROSS APPLY sys.dm_exec_query_plan(dm_exec_query_stats.plan_handle)
+INNER JOIN sys.databases
+ON dm_exec_sql_text.dbid = databases.database_id
+--WHERE dm_exec_sql_text.text LIKE '%ENTER_SEARCH_CRITERIA_HERE%'
+ORDER BY dm_exec_query_stats.total_worker_time ;
+
+
+/*******************************************
+Desc: Which queries on our server are the most expensive?
+A new view has been added to this query: sys.dm_exec_cached_plans, which provides additional info on a cached plan itself, such as the type of query that was executed and the size of the stored plan.
+Documentation: 
+ - sys.dm_exec_cached_plans: Returns a row for each query plan that is cached by SQL Server for faster query execution.
+	https://www.sqlshack.com/searching-the-sql-server-query-plan-cache/
+*********************************************/
+SELECT TOP 25
+	databases.name,
+	dm_exec_sql_text.text AS TSQL_Text,
+	CAST(CAST(dm_exec_query_stats.total_worker_time AS DECIMAL)/CAST(dm_exec_query_stats.execution_count AS DECIMAL) AS INT) as cpu_per_execution,
+	CAST(CAST(dm_exec_query_stats.total_logical_reads AS DECIMAL)/CAST(dm_exec_query_stats.execution_count AS DECIMAL) AS INT) as logical_reads_per_execution,
+	CAST(CAST(dm_exec_query_stats.total_elapsed_time AS DECIMAL)/CAST(dm_exec_query_stats.execution_count AS DECIMAL) AS INT) as elapsed_time_per_execution,
+	dm_exec_query_stats.creation_time, 
+	dm_exec_query_stats.execution_count,
+	dm_exec_query_stats.total_worker_time AS total_cpu_time,
+	dm_exec_query_stats.max_worker_time AS max_cpu_time, 
+	dm_exec_query_stats.total_elapsed_time, 
+	dm_exec_query_stats.max_elapsed_time, 
+	dm_exec_query_stats.total_logical_reads, 
+	dm_exec_query_stats.max_logical_reads,
+	dm_exec_query_stats.total_physical_reads, 
+	dm_exec_query_stats.max_physical_reads,
+	dm_exec_query_plan.query_plan,
+	dm_exec_cached_plans.cacheobjtype,
+	dm_exec_cached_plans.objtype,
+	dm_exec_cached_plans.size_in_bytes
+FROM sys.dm_exec_query_stats 
+CROSS APPLY sys.dm_exec_sql_text(dm_exec_query_stats.plan_handle)
+CROSS APPLY sys.dm_exec_query_plan(dm_exec_query_stats.plan_handle)
+INNER JOIN sys.databases
+ON dm_exec_sql_text.dbid = databases.database_id
+INNER JOIN sys.dm_exec_cached_plans 
+ON dm_exec_cached_plans.plan_handle = dm_exec_query_stats.plan_handle
+--WHERE databases.name = 'AdventureWorks2014'
+ORDER BY dm_exec_query_stats.max_logical_reads DESC;
+
+
+/************************************************* 
+The comment at the top of the query will be included in the plan cache. At the cost of about 30 bytes of SQL text, we now can search the plan cache for this specific query and get exactly what we want without any noise:
+ 
+-- 01232016 Open Order Query by EHP
+SELECT TOP 100
+	SalesOrderHeader.SalesOrderID,
+	SalesOrderDetail.SalesOrderDetailID,
+	SalesOrderHeader.OrderDate,
+	SalesOrderHeader.DueDate,
+	SalesOrderHeader.PurchaseOrderNumber,
+	SalesOrderDetail.ProductID,
+	SalesOrderDetail.LineTotal
+FROM Sales.SalesOrderHeader
+INNER JOIN Sales.SalesOrderDetail
+ON SalesOrderHeader.SalesOrderID = SalesOrderDetail.SalesOrderID
+WHERE Status <> 5;
+*/
+SELECT
+	databases.name,
+	dm_exec_sql_text.text AS TSQL_Text,
+	CAST(CAST(dm_exec_query_stats.total_worker_time AS DECIMAL)/CAST(dm_exec_query_stats.execution_count AS DECIMAL) AS INT) as cpu_per_execution,
+	CAST(CAST(dm_exec_query_stats.total_logical_reads AS DECIMAL)/CAST(dm_exec_query_stats.execution_count AS DECIMAL) AS INT) as logical_reads_per_execution,
+	CAST(CAST(dm_exec_query_stats.total_elapsed_time AS DECIMAL)/CAST(dm_exec_query_stats.execution_count AS DECIMAL) AS INT) as elapsed_time_per_execution,
+	dm_exec_query_stats.creation_time, 
+	dm_exec_query_stats.execution_count,
+	dm_exec_query_stats.total_worker_time AS total_cpu_time,
+	dm_exec_query_stats.max_worker_time AS max_cpu_time, 
+	dm_exec_query_stats.total_elapsed_time, 
+	dm_exec_query_stats.max_elapsed_time, 
+	dm_exec_query_stats.total_logical_reads, 
+	dm_exec_query_stats.max_logical_reads,
+	dm_exec_query_stats.total_physical_reads, 
+	dm_exec_query_stats.max_physical_reads,
+	dm_exec_query_plan.query_plan,
+	dm_exec_cached_plans.cacheobjtype,
+	dm_exec_cached_plans.objtype,
+	dm_exec_cached_plans.size_in_bytes
+FROM sys.dm_exec_query_stats 
+CROSS APPLY sys.dm_exec_sql_text(dm_exec_query_stats.plan_handle)
+CROSS APPLY sys.dm_exec_query_plan(dm_exec_query_stats.plan_handle)
+INNER JOIN sys.databases
+ON dm_exec_sql_text.dbid = databases.database_id
+INNER JOIN sys.dm_exec_cached_plans 
+ON dm_exec_cached_plans.plan_handle = dm_exec_query_stats.plan_handle
+--WHERE dm_exec_sql_text.text LIKE '-- 01232016 Open Order Query by EHP%';
+
+/*
+Note that the creation time is included, which tells us when the plan was created. This provides some insight into how long the plan has been in cache. With it, we can calculate the number of executions per hour for a given query by adding the following TSQL to any of our searches: 
+CAST(CAST(dm_exec_query_stats.execution_count AS DECIMAL) / CAST((CASE WHEN DATEDIFF(HOUR, dm_exec_query_stats.creation_time, CURRENT_TIMESTAMP) = 0 THEN 1 ELSE DATEDIFF(HOUR, dm_exec_query_stats.creation_time, CURRENT_TIMESTAMP) END) AS DECIMAL) AS INT) AS executions_per_hour
+*/
