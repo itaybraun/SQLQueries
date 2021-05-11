@@ -1,0 +1,99 @@
+/**************************************
+Indexes - Main Data
+Based on the article: https://www.sqlshack.com/gathering-sql-server-indexes-statistics-and-usage-information/
+**************************************/
+SELECT  Tab.name  Table_Name 
+			 ,IX.name  Index_Name
+			 ,IX.type_desc Index_Type
+			 ,Col.name  Index_Column_Name
+			 ,IXC.is_included_column Is_Included_Column
+			 ,IX.fill_factor 
+			 ,IX.is_disabled
+			 ,IX.is_primary_key
+			 ,IX.is_unique
+			 		  
+FROM  sys.indexes IX 
+	INNER JOIN sys.index_columns IXC  
+		ON  IX.object_id   =   IXC.object_id AND  IX.index_id  =  IXC.index_id  
+    INNER JOIN sys.columns Col   
+		ON  IX.object_id   =   Col.object_id  AND IXC.column_id  =   Col.column_id     
+    INNER JOIN sys.tables Tab      
+		ON  IX.object_id = Tab.object_id
+
+/**********************************************
+Indexes - Fragmentation
+sys.dm_db_index_physical_stats (DMF)
+***********************************************/
+SELECT  OBJECT_NAME(IDX.OBJECT_ID) AS Table_Name, 
+IDX.name AS Index_Name, 
+IDXPS.index_type_desc AS Index_Type, 
+IDXPS.avg_fragmentation_in_percent  Fragmentation_Percentage
+FROM sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, NULL) IDXPS 
+INNER JOIN sys.indexes IDX  ON IDX.object_id = IDXPS.object_id 
+AND IDX.index_id = IDXPS.index_id 
+ORDER BY Fragmentation_Percentage DESC
+
+
+/***********************************************
+Indexes - Usage (since last restart)
+Documentation: 
+	- sys.dm_db_index_usage_stats (DMV)
+Analysis: 
+	All zero values mean that the table is not used, or the SQL Server service restarted recently.
+	An index with zero or small number of seeks, scans or lookups and large number of updates is a useless index and should be removed, after verifying with the system owner, as the main purpose of adding the index is speeding up the read operations.
+	An index that is scanned heavily with zero or small number of seeks means that the index is badly used and should be replaced with more optimal one.
+	An index with large number of Lookups means that we need to optimize the index by adding the frequently looked up columns to the existing index non-key columns using the INCLUDE clause.
+	A table with a very large number of Scans indicates that SELECT * queries are heavily used, retrieving more columns than what is required, or the index statistics should be updated.
+	A Clustered index with large number of Scans means that a new Non-clustered index should be created to cover a non-covered query.
+	Dates with NULL values mean that this action has not occurred yet.
+	Large scans are OK in small tables.
+	Your index is not here, then no action is performed on that index yet.
+***********************************************/
+SELECT OBJECT_NAME(IX.OBJECT_ID) Table_Name
+	   ,IX.name AS Index_Name
+	   ,IX.type_desc Index_Type
+	   ,SUM(PS.[used_page_count]) * 8 IndexSizeKB
+	   ,IXUS.user_seeks AS NumOfSeeks
+	   ,IXUS.user_scans AS NumOfScans
+	   ,IXUS.user_lookups AS NumOfLookups
+	   ,IXUS.user_updates AS NumOfUpdates
+	   ,IXUS.last_user_seek AS LastSeek
+	   ,IXUS.last_user_scan AS LastScan
+	   ,IXUS.last_user_lookup AS LastLookup
+	   ,IXUS.last_user_update AS LastUpdate
+FROM sys.indexes IX
+	INNER JOIN sys.dm_db_index_usage_stats IXUS 
+		ON IXUS.index_id = IX.index_id AND IXUS.OBJECT_ID = IX.OBJECT_ID
+	INNER JOIN sys.dm_db_partition_stats PS 
+		ON PS.object_id=IX.object_id
+WHERE OBJECTPROPERTY(IX.OBJECT_ID,'IsUserTable') = 1
+GROUP BY OBJECT_NAME(IX.OBJECT_ID) 
+	,IX.name ,IX.type_desc ,IXUS.user_seeks ,IXUS.user_scans 
+	,IXUS.user_lookups,IXUS.user_updates ,IXUS.last_user_seek 
+	,IXUS.last_user_scan ,IXUS.last_user_lookup 
+	,IXUS.last_user_update
+
+/****************************************
+The previous readings give you good indications about the database indexes usage, but you need to dig deeper before deciding to remove or replace an index. You can use the previous results in conjunction with the result of the sys.dm_db_index_physical_stats dynamic management function to have a full view of the index usage. The sys.dm_db_index_physical_stats DMF returns information about the lower-level I/O activities, such as INSERT, UPDATE and DELETE operations, occurred on that index, per each table partition.
+his information includes the name of the table on which the index is created, the name and size of the index and finally the number of INSERT, UPDATE and DELETE operations occurred on these indexes.
+
+*****************************************/
+
+SELECT OBJECT_NAME(IXOS.OBJECT_ID)  Table_Name 
+       ,IX.name  Index_Name
+	   ,IX.type_desc Index_Type
+	   ,SUM(PS.[used_page_count]) * 8 IndexSizeKB
+       ,IXOS.LEAF_INSERT_COUNT NumOfInserts
+       ,IXOS.LEAF_UPDATE_COUNT NumOfupdates
+       ,IXOS.LEAF_DELETE_COUNT NumOfDeletes
+	   
+FROM   SYS.DM_DB_INDEX_OPERATIONAL_STATS (NULL,NULL,NULL,NULL ) IXOS 
+INNER JOIN SYS.INDEXES AS IX ON IX.OBJECT_ID = IXOS.OBJECT_ID AND IX.INDEX_ID =    IXOS.INDEX_ID 
+	INNER JOIN sys.dm_db_partition_stats PS on PS.object_id=IX.object_id
+WHERE  OBJECTPROPERTY(IX.[OBJECT_ID],'IsUserTable') = 1
+GROUP BY OBJECT_NAME(IXOS.OBJECT_ID), 
+	IX.name, 
+	IX.type_desc,
+	IXOS.LEAF_INSERT_COUNT, 
+	IXOS.LEAF_UPDATE_COUNT,
+	IXOS.LEAF_DELETE_COUNT
