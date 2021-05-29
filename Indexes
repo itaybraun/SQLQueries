@@ -20,7 +20,7 @@ FROM  sys.indexes IX
     INNER JOIN sys.tables Tab      
 		ON  IX.object_id = Tab.object_id
 
-/**********************************************
+/***********************************************
 Indexes - Fragmentation
 sys.dm_db_index_physical_stats (DMF)
 ***********************************************/
