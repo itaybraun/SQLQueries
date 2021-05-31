@@ -1,0 +1,77 @@
+/*****************************************
+Call [dbo].[sp_BlitzIndex] 
+Code Version: May-30-2021
+Last Update: May-31-2021
+*****************************************/
+
+DECLARE @RC int
+DECLARE @DatabaseName nvarchar(128) = 'AdventureWorks2016_EXT'
+/*@SchemaName, @TableName - if you pass in these, sp_BlitzIndex does a deeper-dive analysis of just one table. You get several result sets back describing more information about the table's current indexes, foreign key relationships, missing indexes, and fields in the table.*/
+DECLARE @SchemaName nvarchar(128)
+DECLARE @TableName nvarchar(128)
+/*@Mode = 0 (default) - returns high-priority (1-100) advice on the most urgent index issues.
+@Mode = 4: Diagnose Details - like @Mode 0, but returns even more advice (priorities 1-255) with things you may not be able to fix right away, and things we just want to warn you about.
+@Mode = 1: Summarize - total numbers of indexes, space used, etc per database.
+@Mode = 2: Index Usage Details - an inventory of your existing indexes and their usage statistics. Great for copy/pasting into Excel to do slice & dice analysis. This is the only mode that works with the @Output parameters: you can export this data to table on a monthly basis if you need to go back and look to see which indexes were used over time.
+@Mode = 3: Missing Indexes - an inventory of indexes SQL Server is suggesting. Also great for copy/pasting into Excel for later analysis.
+*/
+DECLARE @Mode tinyint = 4
+DECLARE @Filter tinyint
+DECLARE @SkipPartitions bit
+DECLARE @SkipStatistics bit
+DECLARE @GetAllDatabases bit
+DECLARE @ShowColumnstoreOnly bit
+DECLARE @BringThePain bit
+DECLARE @IgnoreDatabases nvarchar(max)
+--@ThresholdMB = 250 - by default, we only analyze objects over 250MB because you're busy.
+DECLARE @ThresholdMB int = 1
+DECLARE @OutputType varchar(20)
+DECLARE @OutputServerName nvarchar(256)
+DECLARE @OutputDatabaseName nvarchar(256)
+DECLARE @OutputSchemaName nvarchar(256)
+DECLARE @OutputTableName nvarchar(256)
+DECLARE @IncludeInactiveIndexes bit
+DECLARE @ShowAllMissingIndexRequests bit
+DECLARE @ShowPartitionRanges bit
+DECLARE @SortOrder nvarchar(50)
+DECLARE @SortDirection nvarchar(4)
+DECLARE @Help tinyint
+--@Debug should be 1 to see the results. 
+DECLARE @Debug bit = 1
+DECLARE @Version varchar(30)
+DECLARE @VersionDate datetime
+DECLARE @VersionCheckMode bit
+
+-- TODO: Set parameter values here.
+
+EXECUTE @RC = [dbo].[sp_BlitzIndex] 
+   @DatabaseName
+  ,@SchemaName
+  ,@TableName
+  ,@Mode
+  ,@Filter
+  ,@SkipPartitions
+  ,@SkipStatistics
+  ,@GetAllDatabases
+  ,@ShowColumnstoreOnly
+  ,@BringThePain
+  ,@IgnoreDatabases
+  ,@ThresholdMB
+  ,@OutputType
+  ,@OutputServerName
+  ,@OutputDatabaseName
+  ,@OutputSchemaName
+  ,@OutputTableName
+  ,@IncludeInactiveIndexes
+  ,@ShowAllMissingIndexRequests
+  ,@ShowPartitionRanges
+  ,@SortOrder
+  ,@SortDirection
+  ,@Help
+  ,@Debug
+  ,@Version OUTPUT
+  ,@VersionDate OUTPUT
+  ,@VersionCheckMode
+GO
+
+
