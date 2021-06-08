@@ -1,5 +1,5 @@
 /**************************************
-Indexes - Main Data
+Indexes - Main Data 
 Based on the article: https://www.sqlshack.com/gathering-sql-server-indexes-statistics-and-usage-information/
 **************************************/
 SELECT  Tab.name  Table_Name 
