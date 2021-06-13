@@ -1,0 +1,45 @@
+/************************************
+SQL Azure - CPU
+https://techcommunity.microsoft.com/t5/datacat/cpu-and-memory-allocation-on-azure-sql-database-managed-instance/ba-p/305508
+***************************************/
+SELECT COUNT(1) AS SchedulerCount
+FROM sys.dm_os_schedulers
+WHERE status = 'VISIBLE ONLINE';
+
+
+--Memory
+SELECT cpu_count,
+physical_memory_kb,
+physical_memory_kb / 1024 as physical_memory_mb,
+committed_target_kb
+FROM sys.dm_os_sys_info;
+
+--Memory, but using performance counters. Notice, the number here is not as above. 
+SELECT cntr_value
+FROM sys.dm_os_performance_counters
+WHERE object_name LIKE '%Memory Manager%'
+AND
+counter_name = 'Target Server Memory (KB)';
+
+--Configured memory; The value 2147483647 means the server has no configured limit
+SELECT value_in_use
+FROM sys.configurations
+WHERE name = 'max server memory (MB)'; 
+
+
+
+/*******************************************8
+-- Calculates the size of the database.
+https://docs.microsoft.com/en-us/azure/azure-sql/database/monitoring-with-dmvs 
+************************************************/
+SELECT SUM(CAST(FILEPROPERTY(name, 'SpaceUsed') AS bigint) * 8192.) / 1024 / 1024 AS DatabaseSizeInMB
+FROM sys.database_files
+WHERE type_desc = 'ROWS';
+GO
+
+-- Calculates the size of individual database objects.
+SELECT sys.objects.name, SUM(reserved_page_count) * 8.0 / 1024
+FROM sys.dm_db_partition_stats, sys.objects
+WHERE sys.dm_db_partition_stats.object_id = sys.objects.object_id
+GROUP BY sys.objects.name;
+GO
