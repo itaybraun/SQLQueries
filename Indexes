@@ -20,6 +20,20 @@ FROM  sys.indexes IX
     INNER JOIN sys.tables Tab      
 		ON  IX.object_id = Tab.object_id
 
+/***********************************
+	Index Columns
+************************************/
+--DMV: sys.index_columns https://docs.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-index-columns-transact-sql?view=sql-server-ver15
+--DMV: sys.columns  https://docs.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-columns-transact-sql?view=sql-server-ver15 
+
+SELECT STRING_AGG( IC.index_column_id, ',') WITHIN GROUP ( ORDER BY IC.key_ordinal ASC) AS Index_Columns_ID, 
+		STRING_AGG( name, ', ') WITHIN GROUP ( ORDER BY IC.key_ordinal ASC) AS Index_Columns
+	FROM sys.index_columns as IC
+		JOIN sys.columns as C
+			ON C.object_id = IC.object_id
+			AND C.column_id = IC.column_id
+	WHERE IC.object_id = 2094630505 AND IC.index_id = 1 
+
 /**************************************************
 Index Size
 https://basitaalishan.com/2012/07/06/find-the-size-of-index-in-sql-server/
