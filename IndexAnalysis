@@ -1,0 +1,262 @@
+--Create the temp Fact table. The fact table contains all the raw data needed by the assertions  
+IF OBJECT_ID('tempdb..#Fact_index') IS NULL
+	CREATE TABLE #Fact_index
+		(factID int, 
+		FactName nvarchar(300), 
+		Value nvarchar(300)
+		)
+
+DECLARE @TableName sysname = 'tblAdTimeline'
+DECLARE @IndexName sysname = 'IDX_TimePoint'
+
+INSERT INTO #Fact_index
+VALUES	(1, 'Table Name', @TableName),
+		(2, 'Table Object ID', NULL),
+		(3, 'Index Name', @IndexName),
+		(4, 'Index ID', NULL),
+		(16, 'Is Clustered', '1'),
+		(5, 'Columns - count', '5'),
+		(6, 'Columns - names', 'PartitionId, AdObjectId, AdAttributeId, LVRRef, AdTimePointId'), 
+		(7, 'Index Size (Bytes)','44'),
+		(8, 'Index Size Details', 'Partition ID(Int = 4 bytes) + AdObjectId(Bigint = 8 bytes) + AdAttributeId(Bigint = 8 bytes) + LVREF (GUID = 16 bytes) + AdTimePointId (Bigint = 8 bytes) '),
+		(9, 'Non Clustered Indexes using this clustered Index', '9'),
+		(10, 'Used by the Primary Key', NULL),
+		(11, 'Columns - Sort Order', ''),
+		(12, 'File Group', 'Primary'),
+		(13, 'Is Partial Index', 'No'),
+		(14, 'Allow Nulls', 'No'),
+		(15, 'Partitions - Count', '1'), 
+
+		--Settings
+		--	PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF
+		--Data - Query the table or the statistics. 
+		(30, 'Rows - Table (All Parititions)', '94331'), --unless it is a partial index, the number of row in the leaf level matches the number of rows in the table. 
+		(31, 'Index Depth - Table', '3'),
+
+		(32, 'Index Size (MB)', '32'),
+		(33, 'Pages', '500'),
+		(34, 'Columns - Cardinality', 'PartitionID: 7; AdObjectId: 5421; AdAttributeId: 250;  LVREF: 177;  + AdTimePointId: 94331'),
+		(35, 'Potentail Range queries', 'Very low'), --based on the data types. Consider placing under schema
+		(36, 'Minimum Row Size', '211'),
+		(37, 'Maximum Row Size', '309'),
+		(38, 'Average Row Size', '212'),  -- Should we check standard deviation too? 
+
+		-- Fragmentation
+		(50, 'Total Fragmentation', '0.6878'),
+		(51, 'Page Fullness', '0.6071'), 
+		-- Usage
+		(60, 'Usage - Last Week', 'Read: 33,000; Write: 1450;'),
+		(62, 'Usage - Last Week', 'Select: 32,123; Insert: 457; Update: 0; Delete: 0'),
+		(61, 'Usage - Last Month', 'No Data') --Server restart deletes index usage history.
+
+/**********************************************************
+	Queries to populate the table
+***********************************************************/
+--Update Object (table) ID
+------------------------------------------------------------
+DECLARE @Object_id int
+DECLARE @Index_id int --the id of the index, starts from 0 or 1  for each table. Therefore the unique index id should include the table name too. 
+DECLARE @Index_Type int -- 0 = Non Clustered, 1 = Clustered. 
+DECLARE @Is_Primary_Key int
+
+SET @Object_id = (SELECT Object_ID (@tableName)) 
+UPDATE #Fact_index SET value = @object_id WHERE factId = 2
+
+--Get the index_id, type, is primary key (sys.indexes)
+----------------------------------------------------------
+SELECT @index_id = index_id,
+		@Index_type = type, 
+		@Is_Primary_Key = is_primary_key
+FROM sys.indexes WHERE name = @IndexName and object_id = @Object_id
+
+UPDATE #Fact_index SET value = @Index_id WHERE factId = 4
+UPDATE #Fact_index SET value = @Index_Type WHERE factId = 16
+UPDATE #Fact_index SET value = @Is_Primary_Key WHERE factId = 10
+
+-- Get the order of the columns of the index
+----------------------------------------------------------
+-- Use STRING_AGG to concatenate the column names (data set) to one string
+--DMV: sys.index_columns https://docs.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-index-columns-transact-sql?view=sql-server-ver15
+--DMV: sys.columns  https://docs.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-columns-transact-sql?view=sql-server-ver15 
+
+SELECT STRING_AGG( IC.index_column_id, ',') WITHIN GROUP ( ORDER BY IC.key_ordinal ASC) AS Index_Columns_ID, 
+		STRING_AGG( name, ', ') WITHIN GROUP ( ORDER BY IC.key_ordinal ASC) AS Index_Columns
+	FROM sys.index_columns as IC
+		JOIN sys.columns as C
+			ON C.object_id = IC.object_id
+			AND C.column_id = IC.column_id
+	WHERE IC.object_id = 2094630505 AND IC.index_id = 1 
+;
+
+
+--Get the Fragmentation
+-------------------------------------------------------------
+--DMF: sys.dm_db_index_physical_stats	https://docs.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-db-index-physical-stats-transact-sql?view=sql-server-ver15
+-- The DMF uses 'SAMPLED' to also fetch the record size (min, max, avg)
+-- Warning: running the DMF with 'SAMPLED' on a large table might take long minutes!
+-- TODO: do not run the SAMPLED if the table is large. What makes it large? 
+-- TODO: What if the index has multiple partitions?
+SELECT  OBJECT_NAME(IDX.OBJECT_ID) AS Table_Name, 
+	IDX.name AS Index_Name, 
+	IDXPS.index_type_desc AS Index_Type, 
+	IDXPS.avg_fragmentation_in_percent AS Fragmentation_Percentage,
+	fragment_count,
+	index_depth, 
+	page_count, 
+	min_record_size_in_bytes, 
+	max_record_size_in_bytes, 
+	avg_record_size_in_bytes
+FROM sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'SAMPLED') IDXPS 
+	INNER JOIN sys.indexes IDX  
+		ON IDX.object_id = IDXPS.object_id 
+		AND IDX.index_id = IDXPS.index_id 
+--WHERE IDX.object_id = 2094630505 AND IDX.index_id = 1 --Put here the object ID and Index ID
+ORDER BY Fragmentation_Percentage DESC
+;
+
+
+-- Get the Index Usage
+-----------------------------------------------------------
+-- The DMV sys.dm_db_index_usage_stats: https://docs.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-db-index-usage-stats-transact-sql?view=sql-server-ver15
+-- The DMV: sys.dm_db_partition_stats: Returns page and row-count information for every partition in the current database.
+--	https://docs.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-db-partition-stats-transact-sql?view=sql-server-ver15
+-- As of v15, the DMV sys.dm_db_index_usage_stat can only show total number of reads (user scans + user seeks) and total number of writes (user updates). 
+--		However, it can't break down the index usage to insert, update, delete.
+-- Probaly this is good enough for now. To get exact DELETE, UPDATE, INSERT use Audits: https://msdn.microsoft.com/en-us/library/cc280386.aspx or maybe this DMV: https://docs.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-db-index-operational-stats-transact-sql?view=sql-server-ver15
+SELECT OBJECT_NAME(IX.OBJECT_ID) Table_Name
+	   ,IX.name AS Index_Name
+	   ,IX.type_desc Index_Type
+	   ,SUM(PS.[used_page_count]) * 8 IndexSizeKB
+	   ,IXUS.user_seeks AS NumOfSeeks
+	   ,IXUS.user_scans AS NumOfScans
+	   ,IXUS.user_lookups AS NumOfLookups
+	   ,IXUS.user_updates AS NumOfUpdates
+	   ,IXUS.last_user_seek AS LastSeek
+	   ,IXUS.last_user_scan AS LastScan
+	   ,IXUS.last_user_lookup AS LastLookup
+	   ,IXUS.last_user_update AS LastUpdate
+FROM sys.indexes IX
+INNER JOIN sys.dm_db_index_usage_stats IXUS ON IXUS.index_id = IX.index_id AND IXUS.OBJECT_ID = IX.OBJECT_ID
+INNER JOIN sys.dm_db_partition_stats PS on PS.object_id=IX.object_id
+WHERE OBJECTPROPERTY(IX.OBJECT_ID,'IsUserTable') = 1
+GROUP BY OBJECT_NAME(IX.OBJECT_ID) ,IX.name ,IX.type_desc ,IXUS.user_seeks ,IXUS.user_scans ,IXUS.user_lookups,IXUS.user_updates ,IXUS.last_user_seek ,IXUS.last_user_scan ,IXUS.last_user_lookup ,IXUS.last_user_update
+
+
+--Last server restart time
+--TODO: check for last restore or index rebuild, who also reset index stats
+--TODO: copy the data to a history table 
+SELECT sqlserver_start_time FROM sys.dm_os_sys_info
+
+
+-- Calculate the distinct values in each column
+---------------------------------------------------------------------
+-- TODO: use DMV, not Information Schema
+-- TODO: rearrange the data to two columns: column_name, distinct_values
+-- TODO: check whether the data can be taken from the statistics 
+-- Warning: this won't be practical for a large table. In this case the estimated cardinality should come from the stats. 
+
+DECLARE @TableName VarChar (Max) = 'tblAdTimeline'
+DECLARE @SqlString VarChar (Max)
+
+set @SqlString = (
+  SELECT DISTINCT
+    'SELECT ' + 
+        RIGHT (ColumnList, LEN (ColumnList)-1) + 
+      ' FROM ' + Table_Name
+    FROM INFORMATION_SCHEMA.COLUMNS COL1
+      CROSS AppLy (
+        SELECT ', COUNT (DISTINCT [' + COLUMN_NAME + ']) AS ' + '''' + COLUMN_NAME + ''''
+          FROM INFORMATION_SCHEMA.COLUMNS COL2
+          WHERE COL1.TABLE_NAME = COL2.TABLE_NAME
+          FOR XML PATH ('')
+      ) TableColumns (ColumnList)
+    WHERE
+      1=1 AND 
+      COL1.TABLE_NAME = @TableName
+)
+SELECT @SqlString
+EXECUTE (@SqlString)
+
+/******************************************************************
+	Table Analysis & Experiments
+********************************************************************/
+
+--Recommendations
+SELECT 'Do not use any clustered indexes on the table' as Recommendation, 
+	90 as Confidence
+
+--	Experiments 
+-- Experiment 1 - Current cost of an INSERT 
+-- Experiemtn 2 - INSERT to a table with no indexes (can't be faster than that). The table has a PK with NC index 
+-- Experiment 3 - SELECT on the PK
+-- Influence: 
+SELECT 'Experiment_1'as ExperimentID, 'INSERT to current table (baseline)' as Description, 0.1396 as Cost 
+UNION ALL
+SELECT 'Experiment_2' as ExperimentID, 'INSERT to table_123456' as Description, 0.0266 as Cost 
+UNION ALL
+SELECT 'Experiment_3' as ExperimentID, 'SELECT From current' as Description, 0.00065 as Cost 
+UNION ALL
+SELECT 'Experiment_4' as ExperimentID, 'SELECT From table_123456' as Description, 0.00065 as Cost 
+
+/*
+INSERT INTO [dbo].[tblAdTimeline]
+           ([PartitionId]
+           ,[AdObjectId]
+           ,[CollectionTime]
+           ,[ModificationType]
+           ,[ForestGenerationId]
+           ,[ValidUntil]
+           ,[Version]
+           ,[OriginatingTime]
+           ,[OriginatingServer]
+           ,[OriginatingId]
+           ,[AdAttributeId]
+           ,[LVRRef]
+           ,[Type]
+           ,[DirSyncOperationType]
+           ,[IsFirst]
+           ,[IsLast]
+           ,[CreationTime]
+           ,[OriginatingChangeUSN]
+           ,[OriginatingUsers]
+           ,[OriginatingUserWorkstations]
+           ,[UserMatchCount])
+     VALUES
+			(1
+			,104
+           ,'2021-05-19 12:59:27.993'
+           ,0
+           ,0
+           ,'2100-01-01 00:00:00.000'
+           ,0
+           ,'2021-05-03 16:29:53.000'
+		   ,'F128-D01-DC01.f128-d01.lab'
+           ,'928593CE-B723-4D1D-AF2D-2D654775A213'
+           ,82
+           ,NULL
+           ,0
+           ,1
+		   ,0
+           ,0
+           ,'1900-01-01 00:00:00.000'
+           ,4099
+           ,NULL
+           ,NULL
+           ,NULL)
+*/
+
+--Experiment 3: select on the current table vs one with no clustered index. 
+-- select the PK
+SELECT *  FROM tblAdTimeline
+WHERE [AdTimePointId] = 1205
+
+SELECT *  FROM tblAdTimeline_0123456
+WHERE [AdTimePointId] = 1205
+
+
+
+
+
+
+SELECT * FROM #Fact_index
+DROP TABLE #Fact_index
