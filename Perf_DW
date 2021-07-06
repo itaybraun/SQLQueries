@@ -1,10 +1,11 @@
 --Tables Rows
 
+INSERT INTO Metis.[dbo].[Tables_Rows]
+	([InsertDate], [FQDN], [TableName], [Rows], [TotalSpaceKB])
 SELECT 
 	getdate() as InsertDate,
 	@@servername + '.' + DB_Name() + '.' + s.name + '.' + t.name as FQDN,
     t.NAME AS TableName,
-    s.Name AS SchemaName,
     p.rows,
     SUM(a.total_pages) * 8 AS TotalSpaceKB
 FROM 
