@@ -33,10 +33,21 @@ VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000002',
 		'ObjectID', 'Object ID',
 	(SELECT Object_ID(@TableName)), ''
 	)
--- Number of Rows
+
+-- Schema 
+--Number of Columns
 INSERT INTO #FactTable
 VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000003',
-		'NumberOfRows', 'Number of Rows', 
+	'NumberOfColumns', 'Number of columns', 
+	(SELECT Count(*) FROM sys.columns as C
+		WHERE OBJECT_ID = @ObjectID 
+	), ''
+)
+
+-- Number of Rows
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000004',
+		'Size.NumberOfRows', 'Number of Rows', 
 		(SELECT SUM(p.rows) as rows
 			FROM 
 				sys.partitions p 
@@ -46,14 +57,6 @@ VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000003',
 		), ''
 	)
 
---Number of Columns
-INSERT INTO #FactTable
-VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000004',
-	'NumberOfColumns', 'Number of columns', 
-	(SELECT Count(*) FROM sys.columns as C
-		WHERE OBJECT_ID = @ObjectID 
-	), ''
-)
 
 -- Number Of Indexes
 INSERT INTO #FactTable
@@ -132,6 +135,23 @@ VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000011',
 		WHERE OBJECT_ID = @ObjectID AND index_id in (0,1) /*Clustred index or heap, can't have both*/
 	), ''
 )
+
+--Size. In KB 
+-- {"name":"Get size of all tables in database", "url":"https://stackoverflow.com/questions/7892334/get-size-of-all-tables-in-database/7892349"}
+
+SELECT 
+    
+    --p.rows,
+    SUM(a.total_pages) * 8 AS TotalSpaceKB,
+    SUM(a.used_pages) * 8 AS UsedSpaceKB, 
+    (SUM(a.total_pages) - SUM(a.used_pages)) * 8 AS UnusedSpaceKB
+FROM   
+    sys.partitions p
+INNER JOIN 
+    sys.allocation_units a ON p.partition_id = a.container_id
+WHERE 
+  OBJECT_ID = @ObjectID
+
 
 	--SELECT Count(*) FROM sys.partitions p 
 /*	 
