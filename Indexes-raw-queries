@@ -1,3 +1,34 @@
+DECLARE @ObjectID INT
+SET @ObjectID = object_ID ('[Application].[Countries]')
+SELECT @objectID
+
+/****************************************
+Query Name: Indexes - Main data
+Granulariry: One row per index
+Desc: main data from the schema. NOT fragmentation or usage. 
+		actual size also not included
+****************************************/
+SELECT  
+	Tab.name  AS Table_Name 
+	,IND.name AS Index_Name
+	,IND.type_desc Index_Type
+	,COL.name  Index_Column_Name
+	,IXC.is_included_column Is_Included_Column
+	,IND.fill_factor 
+	,IND.is_disabled
+	,IND.is_primary_key
+	,IND.is_unique		 		  
+FROM  sys.indexes IND 
+	INNER JOIN sys.index_columns IXC  
+		ON  IND.object_id   =   IXC.object_id 
+		AND  IND.index_id  =  IXC.index_id  
+    INNER JOIN sys.columns COL   
+		ON  IND.object_id   =   Col.object_id  
+		AND IXC.column_id  =   Col.column_id     
+    INNER JOIN sys.tables TAB     
+		ON  IND.object_id = Tab.object_id
+WHERE (TAB.object_ID = @objectID OR @ObjectID IS NULL)
+
 /**************************************
 Indexes - Main Data 
 Based on the article: https://www.sqlshack.com/gathering-sql-server-indexes-statistics-and-usage-information/
