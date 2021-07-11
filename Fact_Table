@@ -1,0 +1,175 @@
+/*****************************************
+**	Table Facts		
+
+CREATE TABLE #FactTable
+	(factID uniqueidentifier, 
+	factKey nvarchar(128), 
+	factLabel nvarchar(128), 
+	factValue nvarchar(max), 
+	factDescription nvarchar(max) DEFAULT (NULL)
+	)
+
+DROP TABLE #FactTable
+*****************************************/
+
+
+DECLARE @TableName sysname
+SET @TableName = '[dbo].[tblAdTimeline]'
+DECLARE @ObjectID sysname = Object_ID(@TableName)
+PRINT @objectID
+
+TRUNCATE TABLE #FactTable
+---------------------------------------------------------
+--FQDN
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000001',
+		'FQDN', 'Fully Qalified Name',
+	(SELECT @@SERVERNAME + '.' + DB_NAME() + '..' +  @TableName), ''
+	)
+
+-- Object ID
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000002',
+		'ObjectID', 'Object ID',
+	(SELECT Object_ID(@TableName)), ''
+	)
+-- Number of Rows
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000003',
+		'NumberOfRows', 'Number of Rows', 
+		(SELECT SUM(p.rows) as rows
+			FROM 
+				sys.partitions p 
+			INNER JOIN 
+				sys.allocation_units a ON p.partition_id = a.container_id
+			WHERE OBJECT_ID = @ObjectID 
+		), ''
+	)
+
+--Number of Columns
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000004',
+	'NumberOfColumns', 'Number of columns', 
+	(SELECT Count(*) FROM sys.columns as C
+		WHERE OBJECT_ID = @ObjectID 
+	), ''
+)
+
+-- Number Of Indexes
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000005',
+	'NumberOfIndexes', 'Number of Indexes', 
+	(SELECT count(*) from sys.indexes WHERE object_ID = @objectID), 
+	'Clustered and Non clustered. What about XML, spatial, full text, columnstore, hash?'
+) 
+	
+-- Has PK
+-- The Query sum all indexes of the table. If one of them has is_primary_key = 1 then the sum is also 1 (All others are 0). 
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000006',
+	'PK.HasPrimaryKey', 'Has Primary Key',
+	(SELECT CASE SUM(cast (is_primary_key as INT)) 
+	WHEN 1 THEN 'TRUE'
+	ELSE 'FALSE'
+	END
+FROM sys.indexes as IND WHERE  is_primary_key = 1 AND object_id = @ObjectID), ''
+)
+
+-- PK Name
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000007',
+	'PK.Name', 'Primary Key - Name',
+	(SELECT name FROM sys.indexes as IND WHERE  is_primary_key = 1 AND object_id = @ObjectID), ''
+)
+
+-- PK Index Type 
+-- Can be either type = 1 (CLUSTERED) or 2 (NONCLUSTERED)
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000008',
+	'PK.IndexType', 'Primary Key - Index Type', 
+	(SELECT type_desc FROM sys.indexes as IND WHERE  is_primary_key = 1 AND object_id = @ObjectID), 
+	'Does the PK uses a clustered index (indexID = 1) or a Non Clustered (IndexID = 2 or higher)'
+)
+
+-- PK - Count columns in the PK 
+-- 
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000009',
+	'PK.NumberOfColumns', 'Primary Key - Number of Columns',
+	(SELECT count(indcol.column_id) 
+		FROM  sys.indexes ind
+			INNER JOIN sys.index_columns indcol
+			ON indcol.object_id = ind.object_id
+			AND indcol.index_id = ind.index_id
+		WHERE ind.object_id = @ObjectID 
+			AND ind.is_primary_key = 1
+	), 'Number of columns in the PK'
+)
+
+-- PK Columns
+-- TODO: this works only for 1 columns. For 2+ columns need to order them and concat 
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000010',
+	'PK.Columns', 'Primary Key - Columns',
+	(SELECT col.Name 
+		FROM  sys.indexes ind
+			INNER JOIN sys.index_columns indcol
+			ON indcol.object_id = ind.object_id
+			AND indcol.index_id = ind.index_id
+		INNER JOIN sys.columns col
+			on col.object_id = indcol.object_id
+			and col.column_id = indcol.column_id
+		WHERE ind.object_id = @ObjectID 
+			AND ind.is_primary_key = 1
+	), 'TODO: this works only for 1 columns. For 2+ columns need to order them and concat'
+)
+
+--Number of Partitions
+INSERT INTO #FactTable
+VALUES ('ACF0A07C-B6C9-4616-8A2A-100000000011',
+	'NumberOfPArtitions', 'Number of Partitions', 
+	(SELECT Count(*) FROM sys.partitions p 
+		WHERE OBJECT_ID = @ObjectID AND index_id in (0,1) /*Clustred index or heap, can't have both*/
+	), ''
+)
+
+	--SELECT Count(*) FROM sys.partitions p 
+/*	 
+SELECT
+   schema_name(ta.schema_id)  SchemaName
+  ,ta.name  TableName
+  ,ind.name
+  ,indcol.key_ordinal Ord
+  ,col.name  ColumnName
+  ,ind.type_desc
+  ,ind.fill_factor
+  ,ind.is_primary_key
+ from sys.tables ta
+  inner join sys.indexes ind
+   on ind.object_id = ta.object_id
+  inner join sys.index_columns indcol
+   on indcol.object_id = ta.object_id
+    and indcol.index_id = ind.index_id
+  inner join sys.columns col
+   on col.object_id = ta.object_id
+    and col.column_id = indcol.column_id
+ where ind.object_id = @ObjectID 
+ order by
+   ta.name
+  ,indcol.key_ordinal
+*/
+
+  /*
+SELECT col.Name 
+FROM  sys.indexes ind
+  INNER JOIN sys.index_columns indcol
+   ON indcol.object_id = ind.object_id
+    AND indcol.index_id = ind.index_id
+INNER JOIN sys.columns col
+   on col.object_id = indcol.object_id
+    and col.column_id = indcol.column_id
+WHERE ind.object_id = @ObjectID 
+	AND ind.is_primary_key = 1
+*/
+
+SELECT * FROM #factTable 
