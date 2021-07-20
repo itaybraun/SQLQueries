@@ -1,0 +1,172 @@
+--Create the temp table
+DECLARE @TableName sysname;
+SET @TableName = 'tblAdTimeline';
+DECLARE @ObjectID int;
+SET @ObjectID = Object_ID(@TableName);
+--------------------------------------------------
+IF OBJECT_ID('tempdb..#Fact_table') IS NULL
+	CREATE TABLE #Fact_table
+		(FactID uniqueidentifier,
+		FactKey varchar(128),
+		FactLable nvarchar(300), 
+		Value nvarchar(300), 
+		FactCategory nvarchar(30) DEFAULT NULL
+		);
+
+--Insert the values in different commands as each has a different data type
+INSERT INTO #Fact_table
+VALUES  ('E68C915D-EDD3-466F-8514-000000000001', 'ObjectID', 'Object ID', @ObjectID, 'Schema'); 
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000002', 'TableName', 'Table Name', @TableName, 'Schema');
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000003', 'SchemaName', 'Schema', '<TODO>', 'Schema');
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000004', 'DBName', 'Datababse', DB_NAME(), 'Schema');
+
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000005', 'NumberOfColumns', 'Number of Columns', (SELECT COUNT(*) FROM syscolumns WHERE id = @ObjectID), 'Schema');
+
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000006', 'PK.Exists', 'A Primary Key Exists', 
+	(SELECT CASE 
+		WHEN Count(index_id) = 1 THEN 'True'
+		ELSE 'False'
+		END 
+	FROM sys.indexes WHERE object_id = @ObjectID AND is_primary_key = 1)
+	, 'Schema');
+
+--PK Index Name. Returns NULL if doesn'nt exists
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000007', 'PK.Name', 'Primary Key Index Name', 
+	(SELECT name FROM sys.indexes WHERE object_id = @ObjectID AND is_primary_key = 1)
+	, 'Schema');
+--PK Index ID. Returns NULL if doesn'nt exists
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000008', 'PK.IndexType', 'Primary Key Index Type', 
+	(SELECT type_desc FROM sys.indexes WHERE object_id = @ObjectID AND is_primary_key = 1)
+	, 'Schema');
+
+
+--PK Index Name. Returns NULL if doesn'nt exists
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000009', 'PK.CountColumns', 'Number of columns in the PK', 
+	(SELECT COUNT(INC.column_id)
+		FROM sys.indexes as IND
+			INNER JOIN sys.index_columns as INC 
+				ON IND.object_id = INC.object_id
+				AND IND.index_id = INC.index_id
+		WHERE IND.object_id = @ObjectID AND IND.is_primary_key = 1)
+	, 'Schema');
+
+--PK Columns names
+--If PK.NumberOfColumns = 0 (=> No PK) then do nothing. 
+IF (SELECT Cast(value as INT) FROM #Fact_table WHERE FactKey = 'PK.CountColumns') = 0
+	INSERT INTO #Fact_table
+	VALUES   ('E68C915D-EDD3-466F-8514-00000000010', 'PK.ColumnsNames', 'Name of the columns', NULL, 'Schema') 
+ELSE 
+IF (SELECT Cast(value as INT) FROM #Fact_table WHERE FactKey = 'PK.CountColumns') = 1
+BEGIN 
+	INSERT INTO #Fact_table
+	VALUES   ('E68C915D-EDD3-466F-8514-000000000011', 'PK.ColumnsNames', 'Name of the columns', 
+		(SELECT  COL.name
+			FROM sys.indexes as IND
+				INNER JOIN sys.index_columns as INC 
+					ON IND.object_id = INC.object_id
+					AND IND.index_id = INC.index_id
+				INNER JOIN sys.columns as COL
+					ON IND.object_id = COL.object_id
+					AND INC.column_id = COL.column_id
+			WHERE IND.object_id = @ObjectID AND IND.is_primary_key = 1)
+		, 'Schema');
+ END
+--TODO - If there are more than 1 column, concatenate them. (using STRING_AGG (SQL2017+))
+
+--PK Key Size
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000012', 'PK.KeySize', 'Primary Key size (bytes)', 
+(SELECT  Sum(COL.max_length)
+	FROM sys.indexes as IND
+		INNER JOIN sys.index_columns as INC 
+			ON IND.object_id = INC.object_id
+			AND IND.index_id = INC.index_id
+		INNER JOIN sys.columns as COL
+			ON IND.object_id = COL.object_id
+			AND INC.column_id = COL.column_id
+	WHERE IND.object_id = @ObjectID AND IND.is_primary_key = 1)
+, 'Schema');
+
+
+--Table has Identity column
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000030', 'Table.HasIdentity', 'Has an Identity Column', 
+(SELECT  CASE COUNT (COL.Name) WHEN 0 THEN 'False' ELSE 'True' END
+	FROM sys.columns as COL
+	WHERE COL.object_id = @ObjectID 
+		AND COL.is_identity = 1)
+, 'Schema');
+--Identity Column Name
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000031', 'Table.IdentityColumnName', 'Identity Column Name', 
+(SELECT  COL.Name
+	FROM sys.columns as COL
+	WHERE COL.object_id = @ObjectID 
+		AND COL.is_identity = 1)
+, 'Schema');
+
+--Total Number of indexes
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000050', 'Table.NumberOfIndexes', 'Number of Indexes', 
+(SELECT  Count(index_id) FROM sys.indexes as IND WHERE IND.object_id = @ObjectID)
+, 'Schema');
+
+--Number of Clustered indexes
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000051', 'Table.NumberOfClusteredIndexes', 'Number of Clustered Indexes', 
+(SELECT  Count(index_id) FROM sys.indexes as IND 
+	WHERE IND.object_id = @ObjectID and IND.type_desc = 'CLUSTERED')
+, 'Schema');
+
+--Number of NON Clustered indexes
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000051', 'Table.NumberOfNonClusteredIndexes', 'Number of Non Clustered Indexes', 
+(SELECT  Count(index_id) FROM sys.indexes as IND 
+	WHERE IND.object_id = @ObjectID and IND.type_desc = 'NONCLUSTERED')
+, 'Schema');
+
+
+SELECT * FROM #Fact_table
+DROP TABLE #Fact_table
+
+
+/*
+INSERT INTO #Fact_table
+VALUES	--Schema Basic
+		(1, 'Table Name', 'AdTime'), 
+		(2, 'Number of Rows', NULL),
+		(3, 'Number of Columns', NULL),
+		(5, 'Has Primary Key', NULL),
+		(6, 'Primary Key - number of columns', NULL),
+		(6, 'Primary Key - Key Size', NULL),
+		(7, 'Has Identity Column', NULL),
+		(8, 'The Primary Key uses the Identity column', NULL),
+		(10, 'Has Foreign Keys', NULL), 
+		(11, 'All Foreign Keys columns has matching data types', NULL), 
+		--Schema Advanced
+		(20, 'Temporal Table', NULL), 
+		(21, 'Memory Optimized Table', NULL),
+		--Table Size (might be a big diff between staging and prod)
+		(4, 'Table Size (excluding indexes)',NULL),
+		(4, 'Table Size (with indexes)',NULL),
+		
+		--Indexes
+		(9, 'Total Number of Indexes', NULL),
+		(12, 'Number of Clustered Indexes', NULL), 
+		(13, 'Number of Non Clustered Indexes', NULL)
+		(13, 'The Primary Key uses a Clustered Index', NULL)
+*/
+
+
+
+
+
+--SELECT * FROM sys.index_columns
