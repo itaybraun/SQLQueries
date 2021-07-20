@@ -19,12 +19,37 @@ VALUES  ('E68C915D-EDD3-466F-8514-000000000001', 'ObjectID', 'Object ID', @Objec
 INSERT INTO #Fact_table
 VALUES   ('E68C915D-EDD3-466F-8514-000000000002', 'TableName', 'Table Name', @TableName, 'Schema');
 INSERT INTO #Fact_table
-VALUES   ('E68C915D-EDD3-466F-8514-000000000003', 'SchemaName', 'Schema', '<TODO>', 'Schema');
+VALUES   ('E68C915D-EDD3-466F-8514-000000000003', 'Table.Schema', 'Schema', '<TODO>', 'Schema');
 INSERT INTO #Fact_table
 VALUES   ('E68C915D-EDD3-466F-8514-000000000004', 'DBName', 'Datababse', DB_NAME(), 'Schema');
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000004', 'Table.CreateDate', 'Create Date', '<TODO>', 'Schema');
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000004', 'Table.FileGroup', 'File Group', '<TODO>', 'Schema');
 
+--Number of Columns
 INSERT INTO #Fact_table
 VALUES   ('E68C915D-EDD3-466F-8514-000000000005', 'NumberOfColumns', 'Number of Columns', (SELECT COUNT(*) FROM syscolumns WHERE id = @ObjectID), 'Schema');
+
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000041', 'Table.NumberOfFK', 'Number of Foreign Key', '<TODO>', 'Schema');
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000042', 'Table.NumberOfTriggers', 'Number of Triggers', '<TODO>', 'Schema');
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000043', 'Table.NumberOfConstraints', 'Number of Constraints', '<TODO>', 'Schema');
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000044', 'Table.NumberOfComputedColumns', 'Number of Computed Columns', '<TODO>', 'Schema');
+
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000003', 'Table.IsMemoryOptimized', 'Is In-Memory', '<TODO>', 'Schema');
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000003', 'Table.IsTemporal', 'Is Temporal', '<TODO>', 'Schema');
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000003', 'Table.NumberOfPartitions', 'Number of Partitions', 
+	(SELECT COUNT(PRT.partition_id) AS Rows
+		FROM    sys.partitions PRT 
+		WHERE PRT.object_ID = @ObjectID AND PRT.index_id in (1,0)), 
+'Schema');
 
 INSERT INTO #Fact_table
 VALUES   ('E68C915D-EDD3-466F-8514-000000000006', 'PK.Exists', 'A Primary Key Exists', 
@@ -128,10 +153,72 @@ VALUES   ('E68C915D-EDD3-466F-8514-000000000051', 'Table.NumberOfClusteredIndexe
 
 --Number of NON Clustered indexes
 INSERT INTO #Fact_table
-VALUES   ('E68C915D-EDD3-466F-8514-000000000051', 'Table.NumberOfNonClusteredIndexes', 'Number of Non Clustered Indexes', 
+VALUES   ('E68C915D-EDD3-466F-8514-000000000052', 'Table.NumberOfNonClusteredIndexes', 'Number of Non Clustered Indexes', 
 (SELECT  Count(index_id) FROM sys.indexes as IND 
 	WHERE IND.object_id = @ObjectID and IND.type_desc = 'NONCLUSTERED')
 , 'Schema');
+
+--Number of columnstore indexes
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000053', 'Table.NumberOfNonColumnstoreIndexes', 'Number of Non Columnstore Indexes', 
+'<TODO>', 'Schema');
+
+--Deprecated Data Types: Image, Text, NText
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000014', 'Table.HasDeprecatedDataTypes', 'Has Deprecated Data Types', 
+	(SELECT Count(COL.column_id)
+	  FROM sys.columns AS COL 
+	  WHERE COL.system_type_id IN (34, 35, 99)) /*Image, Ntext, Text*/, 'Schema');
+--TODO: show column names if relevant
+
+
+
+----------------------------------------  Storage ---------------------------------------------
+-----------------------------------------------------------------------------------------------
+--Number of rows
+--sys.partitions has a row for each table / indexes, therefore use only the main one, clustered (indexIS = 1) or heap (0)
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000100', 'Table.NumberOfRows', 'Number of Rows', 
+	(SELECT SUM(PRT.rows) AS Rows
+FROM    sys.partitions PRT 
+WHERE PRT.object_ID = @ObjectID AND PRT.index_id in (1,0))
+, 'Storage');
+
+--Total Size in KB
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000101', 'Table.AllocatedSpace', 'Allocated Space (KB)', 
+	(SELECT SUM(ALC.total_pages) * 8
+FROM    sys.partitions PRT 
+INNER JOIN
+    sys.allocation_units ALC ON PRT.partition_id = ALC.container_id
+WHERE PRT.object_ID = @ObjectID AND PRT.index_id in (1,0))
+, 'Storage');
+
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000102', 'Table.UsedSpace', 'Used Space', '<TODO>', 'Storage');	
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000103', 'Table.UnusedSpace', 'Unsed Space', '<TODO>', 'Storage');	
+   -- SUM(a.used_pages) * 8 AS UsedSpaceKB,
+   -- (SUM(a.total_pages) - SUM(a.used_pages)) * 8 AS UnusedSpaceKB
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000110', 'Table.ClusteredIndexFragmentation', 'Clustered Index Fragmentation', '<TODO>', 'Storage');	
+
+------------------------------------   Activity ------------------------------------
+------------------------------------------------------------------------------------
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000200', 'LastRestart', 'Last Restart', '<TODO>', 'Activity');	
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000200', 'Table.ActivityRead', 'Read Activity', '<TODO>', 'Activity');	
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000200', 'Table.ActivityWrite', 'Write Activity', '<TODO>', 'Activity');	
+
+------------------------------------   Buffer  ------------------------------------
+------------------------------------------------------------------------------------
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000300', 'Table.PagesInBuffer', 'Pages in Buffer', '<TODO>', 'ServerMemory');	
+INSERT INTO #Fact_table
+VALUES   ('E68C915D-EDD3-466F-8514-000000000301', 'Table.IndexesPagesInBuffer', 'Indexes Pages in Buffer', '<TODO>', 'ServerMemory');	
+
 
 
 SELECT * FROM #Fact_table
@@ -139,34 +226,11 @@ DROP TABLE #Fact_table
 
 
 /*
-INSERT INTO #Fact_table
-VALUES	--Schema Basic
-		(1, 'Table Name', 'AdTime'), 
-		(2, 'Number of Rows', NULL),
-		(3, 'Number of Columns', NULL),
-		(5, 'Has Primary Key', NULL),
-		(6, 'Primary Key - number of columns', NULL),
-		(6, 'Primary Key - Key Size', NULL),
-		(7, 'Has Identity Column', NULL),
-		(8, 'The Primary Key uses the Identity column', NULL),
-		(10, 'Has Foreign Keys', NULL), 
-		(11, 'All Foreign Keys columns has matching data types', NULL), 
-		--Schema Advanced
-		(20, 'Temporal Table', NULL), 
-		(21, 'Memory Optimized Table', NULL),
+		(8, 'The Primary Key uses the Identity column', NULL),		
+		(11, 'All Foreign Keys columns has matching data types', NULL), 		
 		--Table Size (might be a big diff between staging and prod)
 		(4, 'Table Size (excluding indexes)',NULL),
 		(4, 'Table Size (with indexes)',NULL),
-		
 		--Indexes
-		(9, 'Total Number of Indexes', NULL),
-		(12, 'Number of Clustered Indexes', NULL), 
-		(13, 'Number of Non Clustered Indexes', NULL)
 		(13, 'The Primary Key uses a Clustered Index', NULL)
 */
-
-
-
-
-
---SELECT * FROM sys.index_columns
