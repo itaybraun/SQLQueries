@@ -1,0 +1,169 @@
+-- General --
+-------------
+-- Current User, DB...  https://www.postgresql.org/docs/9.1/functions-info.html 
+SELECT current_user, current_catalog, version();
+
+ --https://www.postgresql.org/docs/9.1/view-pg-settings.html
+ --The view pg_settings provides access to run-time parameters of the server. It is essentially an alternative interface to the SHOW and SET commands. It also provides access to some facts about each parameter that are not directly available from SHOW, such as minimum and maximum values.
+ SELECT * FROM pg_settings;
+ 
+ --https://www.postgresql.org/docs/9.1/sql-show.html
+ SHOW ALL
+ --change values using ALTER SYSTEM: https://www.postgresql.org/docs/10/sql-altersystem.html 
+ -----------------------------
+ -- 		Schema			--
+ -----------------------------
+
+-- User Tables
+SELECT * 
+FROM pg_tables
+WHERE schemaname NOT IN ('pg_catalog','information_schema');
+
+--Indexes
+ SELECT * FROM pg_indexes WHERE schemaname = 'public';
+
+-----------------------
+-- 		Storage		 --
+-----------------------
+
+--DB Size
+SELECT pg_size_pretty( pg_database_size('postgres') );
+
+--Table (Relation) size. Indexes are also seen as relations
+SELECT pg_size_pretty( pg_total_relation_size('country') );
+
+--https://wiki.postgresql.org/wiki/Disk_Usage
+--	Query: General Table Size Information Grouped For Partitioned Tables
+--	Desc: This will report size information for all tables, that are not inherited, in the "pretty" form. Inherited tables are grouped together.
+-- TODO: do not show the pg-catalog schema. 
+--	Granularity: table_schema, table_name
+WITH RECURSIVE pg_inherit(inhrelid, inhparent) AS
+    (select inhrelid, inhparent
+    FROM pg_inherits
+    UNION
+    SELECT child.inhrelid, parent.inhparent
+    FROM pg_inherit child, pg_inherits parent
+    WHERE child.inhparent = parent.inhrelid),
+pg_inherit_short AS (SELECT * FROM pg_inherit WHERE inhparent NOT IN (SELECT inhrelid FROM pg_inherit))
+SELECT table_schema
+    , TABLE_NAME
+    , row_estimate
+    , pg_size_pretty(total_bytes) AS total
+    , pg_size_pretty(index_bytes) AS INDEX
+    , pg_size_pretty(toast_bytes) AS toast
+    , pg_size_pretty(table_bytes) AS TABLE
+  FROM (
+    SELECT *, total_bytes-index_bytes-COALESCE(toast_bytes,0) AS table_bytes
+    FROM (
+         SELECT c.oid
+              , nspname AS table_schema
+              , relname AS TABLE_NAME
+              , SUM(c.reltuples) OVER (partition BY parent) AS row_estimate
+              , SUM(pg_total_relation_size(c.oid)) OVER (partition BY parent) AS total_bytes
+              , SUM(pg_indexes_size(c.oid)) OVER (partition BY parent) AS index_bytes
+              , SUM(pg_total_relation_size(reltoastrelid)) OVER (partition BY parent) AS toast_bytes
+              , parent
+          FROM (
+                SELECT pg_class.oid
+                    , reltuples
+                    , relname
+                    , relnamespace
+                    , pg_class.reltoastrelid
+                    , COALESCE(inhparent, pg_class.oid) parent
+                FROM pg_class
+                    LEFT JOIN pg_inherit_short ON inhrelid = oid
+                WHERE relkind IN ('r', 'p')
+             ) c
+             LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+  ) a
+  WHERE oid = parent
+) a
+ORDER BY total_bytes DESC;
+
+-- Query: General Table Size Information
+--	Desc: This will report size information for all tables, in both raw bytes and "pretty" form.
+--	Granularity: oid 
+SELECT *, pg_size_pretty(total_bytes) AS total
+    , pg_size_pretty(index_bytes) AS index
+    , pg_size_pretty(toast_bytes) AS toast
+    , pg_size_pretty(table_bytes) AS table
+  FROM (
+  SELECT *, total_bytes-index_bytes-coalesce(toast_bytes,0) AS table_bytes FROM (
+      SELECT c.oid,nspname AS table_schema, relname AS table_name
+              , c.reltuples AS row_estimate
+              , pg_total_relation_size(c.oid) AS total_bytes
+              , pg_indexes_size(c.oid) AS index_bytes
+              , pg_total_relation_size(reltoastrelid) AS toast_bytes
+          FROM pg_class c
+          LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE relkind = 'r'
+  ) a
+) a;
+
+-- Query: Finding the size of your biggest relations
+-- Desc: Relations are objects in the database such as tables and indexes, and this query shows the size of all the individual parts. Tables which have both regular and TOAST pieces will be broken out into separate components; 
+--		Only on the current DB
+--	Granularity: relation
+--	Notes: TOAST (The Oversized-Attribute Storage Technique). URL: https://www.postgresql.org/docs/current/storage-toast.html 
+SELECT nspname || '.' || relname AS "relation",
+    pg_size_pretty(pg_relation_size(C.oid)) AS "size"
+  FROM pg_class C
+  LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
+  WHERE nspname NOT IN ('pg_catalog', 'information_schema')
+  ORDER BY pg_relation_size(C.oid) DESC
+  LIMIT 20;
+  
+  
+--Query: Finding the total size of your biggest tables
+-- Desc: This version of the query uses pg_total_relation_size, which sums total disk space used by the table including indexes and toasted data rather than breaking out the individual pieces:
+-- Notes: pg_total_relation_size; URL: https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADMIN-DBSIZE
+-- Granularity: relation (which is schema.objectname)
+SELECT nspname || '.' || relname AS "relation",
+    pg_size_pretty(pg_total_relation_size(C.oid)) AS "total_size"
+  FROM pg_class C
+  LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
+  WHERE nspname NOT IN ('pg_catalog', 'information_schema')
+    AND C.relkind <> 'i'
+    AND nspname !~ '^pg_toast'
+  ORDER BY pg_total_relation_size(C.oid) DESC
+  LIMIT 20;
+  
+  
+  ----------------------------------
+  --		LOG				--
+  ----------------------------
+  -- https://www.postgresql.org/docs/current/pgstatstatements.html
+  -- Requires configuration of the min value to collect + a restart. 
+  SELECT * FROM pg_stat_statements; 
+  --pg_stat_statements.track = ALL
+  
+  --Top CPU
+  SELECT total_time, query
+FROM pg_stat_statements
+ORDER BY total_time
+DESC LIMIT 10;
+
+--Longest queries on avg. Does it group the quereis as in the query store?
+SELECT mean_time, query
+FROM pg_stat_statements
+ORDER BY mean_time
+DESC LIMIT 10;
+
+ --  EXPLAIN -----------
+ EXPLAIN SELECT * FROM country WHERE country_id = 1;
+ EXPLAIN ANALYZE SELECT * FROM country WHERE country_id = 1;
+ EXPLAIN SELECT * FROM country WHERE country = 'Angola';
+ EXPLAIN ANALYZE SELECT * FROM pg_indexes WHERE tablename='pg_constraint';   --https://wiki.postgresql.org/wiki/Introduction_to_VACUUM,_ANALYZE,_EXPLAIN,_and_COUNT
+-----------------------
+-- 		Security	 --
+-----------------------
+
+--Check whether the current user has a SUPER priviledge. It is needed for operations such as DISABLE ALL TRIGGERS
+-- The expected answer for usesuper should be 'true'
+select usename, usesuper from pg_user where usename = (select current_user);
+ 
+ --https://www.postgresql.org/docs/current/view-pg-user.html
+ --The view pg_user provides access to information about database users. This is simply a publicly readable view of pg_shadow that blanks out the password field.
+ SELECT * FROM pg_user;
+ 
+ 
