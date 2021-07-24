@@ -1,16 +1,25 @@
--- General --
--------------
+-----------------------------
+-- General & Configuration --
+-----------------------------
 -- Current User, DB...  https://www.postgresql.org/docs/9.1/functions-info.html 
-SELECT current_user, current_catalog, version();
+SELECT current_user, current_catalog, version() ;
 
  --https://www.postgresql.org/docs/9.1/view-pg-settings.html
  --The view pg_settings provides access to run-time parameters of the server. It is essentially an alternative interface to the SHOW and SET commands. It also provides access to some facts about each parameter that are not directly available from SHOW, such as minimum and maximum values.
- SELECT * FROM pg_settings;
+ SELECT * FROM pg_settings WHERE name like '%log%';
+  SELECT * FROM pg_settings WHERE name like '%share%';
  
  --https://www.postgresql.org/docs/9.1/sql-show.html
  SHOW ALL
  --change values using ALTER SYSTEM: https://www.postgresql.org/docs/10/sql-altersystem.html 
- -----------------------------
+ 
+ --After updating the config and running SELECT pg_reload_conf() to reload the config, Postgres will start logging all queries that take over the threshold.
+ SELECT pg_reload_conf()
+
+SELECT * FROM pg_available_extensions WHERE name = 'pg_stat_statements'
+SELECT * FROM pg_available_extension_versions WHERE name = 'pg_stat_statements'  
+and  installed is true;
+-----------------------------
  -- 		Schema			--
  -----------------------------
 
@@ -37,49 +46,7 @@ SELECT pg_size_pretty( pg_total_relation_size('country') );
 --	Desc: This will report size information for all tables, that are not inherited, in the "pretty" form. Inherited tables are grouped together.
 -- TODO: do not show the pg-catalog schema. 
 --	Granularity: table_schema, table_name
-WITH RECURSIVE pg_inherit(inhrelid, inhparent) AS
-    (select inhrelid, inhparent
-    FROM pg_inherits
-    UNION
-    SELECT child.inhrelid, parent.inhparent
-    FROM pg_inherit child, pg_inherits parent
-    WHERE child.inhparent = parent.inhrelid),
-pg_inherit_short AS (SELECT * FROM pg_inherit WHERE inhparent NOT IN (SELECT inhrelid FROM pg_inherit))
-SELECT table_schema
-    , TABLE_NAME
-    , row_estimate
-    , pg_size_pretty(total_bytes) AS total
-    , pg_size_pretty(index_bytes) AS INDEX
-    , pg_size_pretty(toast_bytes) AS toast
-    , pg_size_pretty(table_bytes) AS TABLE
-  FROM (
-    SELECT *, total_bytes-index_bytes-COALESCE(toast_bytes,0) AS table_bytes
-    FROM (
-         SELECT c.oid
-              , nspname AS table_schema
-              , relname AS TABLE_NAME
-              , SUM(c.reltuples) OVER (partition BY parent) AS row_estimate
-              , SUM(pg_total_relation_size(c.oid)) OVER (partition BY parent) AS total_bytes
-              , SUM(pg_indexes_size(c.oid)) OVER (partition BY parent) AS index_bytes
-              , SUM(pg_total_relation_size(reltoastrelid)) OVER (partition BY parent) AS toast_bytes
-              , parent
-          FROM (
-                SELECT pg_class.oid
-                    , reltuples
-                    , relname
-                    , relnamespace
-                    , pg_class.reltoastrelid
-                    , COALESCE(inhparent, pg_class.oid) parent
-                FROM pg_class
-                    LEFT JOIN pg_inherit_short ON inhrelid = oid
-                WHERE relkind IN ('r', 'p')
-             ) c
-             LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-  ) a
-  WHERE oid = parent
-) a
-ORDER BY total_bytes DESC;
-
+ xcvbn mbvcvb
 -- Query: General Table Size Information
 --	Desc: This will report size information for all tables, in both raw bytes and "pretty" form.
 --	Granularity: oid 
@@ -127,8 +94,7 @@ SELECT nspname || '.' || relname AS "relation",
     AND nspname !~ '^pg_toast'
   ORDER BY pg_total_relation_size(C.oid) DESC
   LIMIT 20;
-  
-  
+
   ----------------------------------
   --		LOG				--
   ----------------------------
@@ -149,14 +115,130 @@ FROM pg_stat_statements
 ORDER BY mean_time
 DESC LIMIT 10;
 
+-- get the top 5 duration queries executed during your performance/benchmarking run:
+SELECT query, calls, total_time, rows, 100.0 * shared_blks_hit/           
+nullif(shared_blks_hit + shared_blks_read, 0) AS hit_percent
+FROM pg_stat_statements
+ORDER BY total_time
+DESC LIMIT 5
+
+  
+  -- Query: Which Top 3 queries were burning the most CPU time between times t1 and t2 and approximately how much of the total Postgres runtime it represented:
+  -- https://www.cybertec-postgresql.com/en/a-quick-pg_stat_statements-troubleshooting-hack/
+  explain
+with q_snap_data as (
+  select
+    ts,
+    queryid,
+    max(query) as query, /* avoiding groupings over long text values is a good idea generally */
+    sum(total_time) as total_time,
+    sum(calls) as calls
+  from
+    stat_statements_snapshots
+  where
+    not query like 'insert into stat_statements_snapshots%' /* don't include our snapshot collecting query */
+  group by
+    ts, queryid /* 1st gruping needed as queries have separate rows for various users which we want to ignore */
+),
+q_min_total as (
+  select sum(total_time) as min from q_snap_data group by ts order by ts limit 1
+),
+q_max_total as (
+  select sum(total_time) as max from q_snap_data group by ts order by ts desc limit 1
+)
+select
+  queryid,
+  max(query) as query,
+  max(total_time) - min(total_time) as total_time,
+  max(calls) - min(calls) as calls,
+  (max(total_time) - min(total_time)) / (max(calls) - min(calls)) as mean_time,
+  100 * (max(total_time) - min(total_time))::numeric / (select max - min from q_max_total, q_min_total) as approx_pct_of_total
+from
+  q_snap_data
+/*where
+  ts between t1 and t2 */
+group by
+  queryid
+having
+  max(calls) > min(calls)
+order by
+  total_time desc
+limit
+  3;
+  
+  --Query: What queries had the biggest (absolute) execution time change compared to the hour before:
+  with q_snap_data as (
+  select
+    ts,
+    queryid,
+    max(query) as query, /* avoiding grupings over long text values is a good idea generally */
+    sum(total_time) as total_time,
+    sum(calls) as calls
+  from
+    stat_statements_snapshots
+  where
+    not query like 'insert into stat_statements_snapshots%' /* don't include our snapshot collecting query */
+    /* and ts between t1 and t2 */
+  group by
+    ts, queryid /* 1st grouping needed as queries have separate rows for various users which we want to ignore */
+),
+q_snap_data_hour as (
+  select
+    extract(hour from ts) as ts,
+    queryid,
+    max(query) as query,
+    max(total_time) - min(total_time) as total_time,
+    max(calls) - min(calls) as calls
+  from
+    q_snap_data
+  group by
+    extract(hour from ts), queryid
+)
+select
+  *,
+  total_time - lag_total_time as total_time_growth
+from (
+select
+  ts,
+  queryid,
+  query,
+  total_time,
+  lag(total_time) over (partition by queryid order by ts) as lag_total_time,
+  calls
+from
+  q_snap_data_hour
+) x
+where
+  lag_total_time > 0 and total_time > lag_total_time
+order by
+  total_time - lag_total_time desc
+limit
+  3;
+  
+  -- By looking at the total_time and number of times a query is called per query, we can get a really quick view of which queries are very frequently run, as well as what they consume on average:
+  -- https://www.citusdata.com/blog/2019/02/08/the-most-useful-postgres-extension-pg-stat-statements/
+  SELECT 
+  (total_time / 1000 / 60) as total, 
+  (total_time/calls) as avg, 
+  query 
+FROM pg_stat_statements 
+ORDER BY 1 DESC 
+LIMIT 100;
+
+SELECT pg_stat_statements_reset();
+
+SELECT Query, * FROM pg_stat_activity WHERE query like 'SELECT %';
+
+
  --  EXPLAIN -----------
- EXPLAIN SELECT * FROM country WHERE country_id = 1;
+
+EXPLAIN SELECT * FROM country WHERE country_id = 1;
  EXPLAIN ANALYZE SELECT * FROM country WHERE country_id = 1;
  EXPLAIN SELECT * FROM country WHERE country = 'Angola';
  EXPLAIN ANALYZE SELECT * FROM pg_indexes WHERE tablename='pg_constraint';   --https://wiki.postgresql.org/wiki/Introduction_to_VACUUM,_ANALYZE,_EXPLAIN,_and_COUNT
------------------------
--- 		Security	 --
------------------------
+					-----------------------
+					-- 		Security	 --
+					-----------------------
 
 --Check whether the current user has a SUPER priviledge. It is needed for operations such as DISABLE ALL TRIGGERS
 -- The expected answer for usesuper should be 'true'
