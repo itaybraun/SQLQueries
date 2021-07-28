@@ -1,0 +1,132 @@
+------------------------------------------
+--			pg_stat_activity			--
+------------------------------------------
+-- 	https://www.postgresql.org/docs/current/monitoring-stats.html#pg-stat-activity-view 
+-- pg_locks: https://www.postgresql.org/docs/current/view-pg-locks.html
+
+-- title: Introduction to pg_stat_activity.; url = https://dataegret.com/2015/11/introduction-to-pg_stat_activity/
+-- title = Deep dive into postgres stats: pg_stat_activity and pg_locks; url = https://dataegret.com/2017/10/deep-dive-into-postgres-stats-pg_stat_activity-and-pg_locks/
+SELECT query, * FROM pg_stat_activity WHERE datname = 'devrental';
+--Show databases
+SELECT datname FROM pg_database;
+--Count connections
+SELECT count(*) AS total_conns FROM pg_stat_activity; 
+SELECT count(*) FROM pg_stat_activity WHERE client_addr = '10.0.20.26';
+--Long transactions: 
+SELECT
+client_addr, usename, datname,
+clock_timestamp() – xact_start AS xact_age,
+clock_timestamp() – query_start AS query_age,
+state, query
+FROM pg_stat_activity
+ORDER BY coalesce(xact_start, query_start);
+
+--Total activity in a DB 
+client_addr, usename, datname, state, count(*)
+FROM pg_stat_activity GROUP BY 1, 2, 3, 4
+ORDER BY 5 DESC;
+
+--Connection Age
+SELECT
+client_addr, usename, datname,
+clock_timestamp() – xact_start AS xact_age,
+clock_timestamp() – query_start AS query_age, state, query
+FROM pg_stat_activity
+WHERE state = ‘idle in transaction’ ORDER BY
+coalesce(xact_start,query_start);
+
+client_addr, usename, datname,
+now() - xact_start AS xact_age,
+now() - query_start AS query_age,
+state, query
+FROM pg_stat_activity
+WHERE (
+(now() - xact_start) > '00:00:10'::interval OR
+(now() - query_start) > '00:00:10'::interval AND
+state <> 'idle'
+)
+ORDER BY coalesce(xact_start, query_start);
+
+---But that’s not the end, there can be situations when a query is blocked by another request or transaction. To identify such connections the waiting attribute can be used (true if disabled, false if no locks).
+SELECT
+client_addr, usename, datname,
+now() – xact_start AS xact_age,
+now() – query_start AS query_age,
+state, waiting, query
+FROM pg_stat_activity
+WHERE waiting
+ORDER BY coalesce(xact_start, query_start);
+
+
+--Here is an example of a view which shows abnormal activity in the database.
+CREATE VIEW db_activity AS SELECT pid, client_addr, client_port, datname, usename, clock_timestamp() – pg_stat_activity.xact_start AS ts_age, clock_timestamp() – pg_stat_activity.query_start AS query_age, clock_timestamp() –
+pg_stat_activity.state_change AS change_age, waiting, state, query FROM pg_stat_activity WHERE (
+
+(clock_timestamp() – xact_start) > ’00:00:00.1′::interval
+OR
+(clock_timestamp() – query_start) > ’00:00:00.1′::interval
+AND state IN (‘idle in transaction (aborted)’, ‘idle in transaction’)
+) AND pid <> pg_backend_pid()
+ORDER BY COALESCE (xact_start, query_start);
+
+--here is some more useful information about client and its transaction and query.
+SELECT (clock_timestamp() - xact_start) AS xact_age,
+       (clock_timestamp() - query_start) AS query_age,
+       (clock_timestamp() - state_change) AS change_age,
+       pid, state, datname, usename,
+       coalesce(wait_event_type = 'Lock', 'f') AS waiting,
+       wait_event_type ||'.'|| wait_event as wait_details,
+       client_addr ||'.'|| client_port AS client,
+       query
+FROM pg_stat_activity
+WHERE clock_timestamp() - coalesce(xact_start, query_start) > '00:00:00.1'::interval
+AND pid <> pg_backend_pid() AND state <> 'idle'
+ORDER BY coalesce(xact_start, query_start);
+
+-- I recommend to run in expanded mode and examine first 5 records which shows the longest queries.
+SELECT
+  COALESCE(l1.relation::regclass::text,l1.locktype) as locked_item,
+  w.wait_event_type as waiting_ev_type, w.wait_event as waiting_ev, w.query as waiting_query,
+  l1.mode as waiting_mode,
+  (select now() - xact_start as waiting_xact_duration from pg_stat_activity where pid = w.pid),
+  (select now() - query_start as waiting_query_duration from pg_stat_activity where pid = w.pid),
+  w.pid as waiting_pid, w.usename as waiting_user, w.state as waiting_state,
+  l.wait_event_type as locking_ev_type, l.wait_event_type as locking_ev, l.query as locking_query,
+  l2.mode as locking_mode,
+  (select now() - xact_start as locking_xact_duration from pg_stat_activity where pid = l.pid),
+  (select now() - query_start as locking_query_duration from pg_stat_activity where pid = l.pid),
+  l.pid as locking_pid, l.usename as locking_user, l.state as locking_state
+FROM pg_stat_activity w
+JOIN pg_locks l1 ON w.pid = l1.pid AND NOT l1.granted
+JOIN pg_locks l2 ON (l1.transactionid = l2.transactionid AND l1.pid != l2.pid)
+    OR (l1.database = l2.database AND l1.relation = l2.relation and l1.pid != l2.pid)
+JOIN pg_stat_activity l ON l2.pid = l.pid
+WHERE w.wait_event is not null and w.wait_event_type is not null
+ORDER BY l.query_start,w.query_start;
+
+--Another example of pg_locks and pg_stat_activity joint usage is lock tree which is extremely useful when postgres is drowning in the waiting clients. It has been written by my colleague, Victor Yegorov who has been inspired by and example from ORACLE. When dozens of clients are in a waiting state, it seems that there is no other way to pg_terminate’em all. But using this query, it is possible to quickly find out the root cause of the occurred waitings and make one single “kill” to resolve the issue at once.
+WITH RECURSIVE l AS (
+  SELECT pid, locktype, mode, granted,
+ROW(locktype,database,relation,page,tuple,virtualxid,transactionid,classid,objid,objsubid) obj
+  FROM pg_locks
+), pairs AS (
+  SELECT w.pid waiter, l.pid locker, l.obj, l.mode
+  FROM l w
+  JOIN l ON l.obj IS NOT DISTINCT FROM w.obj AND l.locktype=w.locktype AND NOT l.pid=w.pid AND l.granted
+  WHERE NOT w.granted
+), tree AS (
+  SELECT l.locker pid, l.locker root, NULL::record obj, NULL AS mode, 0 lvl, locker::text path, array_agg(l.locker) OVER () all_pids
+  FROM ( SELECT DISTINCT locker FROM pairs l WHERE NOT EXISTS (SELECT 1 FROM pairs WHERE waiter=l.locker) ) l
+  UNION ALL
+  SELECT w.waiter pid, tree.root, w.obj, w.mode, tree.lvl+1, tree.path||'.'||w.waiter, all_pids || array_agg(w.waiter) OVER ()
+  FROM tree JOIN pairs w ON tree.pid=w.locker AND NOT w.waiter = ANY ( all_pids )
+)
+SELECT (clock_timestamp() - a.xact_start)::interval(3) AS ts_age,
+       replace(a.state, 'idle in transaction', 'idletx') state,
+       (clock_timestamp() - state_change)::interval(3) AS change_age,
+       a.datname,tree.pid,a.usename,a.client_addr,lvl,
+       (SELECT count(*) FROM tree p WHERE p.path ~ ('^'||tree.path) AND NOT p.path=tree.path) blocked,
+       repeat(' .', lvl)||' '||left(regexp_replace(query, 's+', ' ', 'g'),100) query
+FROM tree
+JOIN pg_stat_activity a USING (pid)
+ORDER BY path;
