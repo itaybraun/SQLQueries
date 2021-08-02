@@ -1,0 +1,67 @@
+------------------------------
+--	 Extended Events	--
+---------------------------
+-- Create a Session
+CREATE EVENT SESSION [Ring Buffer - Track Waits] ON SERVER 
+ADD EVENT sqlos.wait_info(
+    ACTION(sqlserver.database_id,sqlserver.database_name,sqlserver.is_system,sqlserver.session_id,sqlserver.sql_text)) 
+ADD TARGET package0.ring_buffer
+WITH (STARTUP_STATE=OFF)
+GO
+ 
+ 
+--All Sessions
+
+/* Start session */
+ALTER EVENT SESSION [Ring Buffer - Track Waits] ON SERVER STATE=START;
+
+/* Stop session */
+ALTER EVENT SESSION [Ring Buffer - Track Waits] ON SERVER STATE=STOP;
+/* Drop session */
+DROP EVENT SESSION [Ring Buffer - Track Waits] ON SERVER;
+
+/*Generate some activity */
+SELECT * FROM [Sales].[SalesPerson] WHERE BusinessEntityID = 274
+SELECT * FROM [Sales].[SalesPerson] WHERE BusinessEntityID = 280
+SELECT * FROM [Sales].[SalesPerson] WHERE BusinessEntityID = 285
+
+
+-- The query from the BOL 
+SELECT name, target_name, CAST(xet.target_data AS xml)
+FROM sys.dm_xe_session_targets AS xet
+JOIN sys.dm_xe_sessions AS xe
+   ON (xe.address = xet.event_session_address)
+WHERE xe.name = 'Ring Buffer - Track Waits';
+
+--------------------------------------------------------------------
+-- XEL file Analysis
+-- Title: How to Query Extended Events Target XML	; URL: https://www.brentozar.com/archive/2015/01/query-extended-events-target-xml/
+-- Title: SQL Server Extended Events Target; URL: https://docs.microsoft.com/en-us/previous-versions/sql/sql-server-2016/bb630339(v=sql.130)?redirectedfrom=MSDN			
+---------------------------------------------------------------
+
+--Copy the XML into tha temp table (run once). It should have only 1 row 
+SELECT CAST(target_data as xml) AS targetdata
+INTO #capture_waits_data
+FROM sys.dm_xe_session_targets xet
+JOIN sys.dm_xe_sessions xes
+    ON xes.address = xet.event_session_address
+WHERE xes.name = 'Ring Buffer - Track Waits'
+  AND xet.target_name = 'ring_buffer';
+
+SELECT * 
+FROM #capture_waits_data;
+
+/* Generate a result set from the XML
+
+example of XML manipulation 
+SELECT xed.event_data.value('(data[@name="wait_type"]/text)[1]', 'varchar(25)') AS wait_type
+FROM #capture_waits_data
+  CROSS APPLY targetdata.nodes('//RingBufferTarget/event') AS xed (event_data);
+  */
+
+  SELECT xed.event_data.value('(@timestamp)[1]', 'datetime2') AS [timestamp],
+  xed.event_data.value('(data[@name="wait_type"]/text)[1]', 'varchar(25)') AS wait_type, 
+  xed.event_data.value('(data[@name="duration"]/value)[1]', 'int') AS wait_type_duration_ms, 
+  xed.event_data.value('(data[@name="signal_duration"]/value)[1]', 'int') AS wait_type_signal_duration_ms 
+FROM #capture_waits_data
+  CROSS APPLY targetdata.nodes('//RingBufferTarget/event') AS xed (event_data);
