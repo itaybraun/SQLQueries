@@ -12,6 +12,10 @@ GO
  
 --All Sessions
 
+/* Active Sessions */
+--Returns information about an active extended events session. This session is a collection of events, actions, and targets.
+SELECT * FROM sys.dm_xe_sessions 
+
 /* Start session */
 ALTER EVENT SESSION [Ring Buffer - Track Waits] ON SERVER STATE=START;
 
@@ -33,6 +37,7 @@ JOIN sys.dm_xe_sessions AS xe
    ON (xe.address = xet.event_session_address)
 WHERE xe.name = 'Ring Buffer - Track Waits';
 
+-- Title: sys.fn_xe_file_target_read_file; https://docs.microsoft.com/en-us/sql/relational-databases/system-functions/sys-fn-xe-file-target-read-file-transact-sql?view=sql-server-ver15; 
 --------------------------------------------------------------------
 -- XEL file Analysis
 -- Title: How to Query Extended Events Target XML	; URL: https://www.brentozar.com/archive/2015/01/query-extended-events-target-xml/
@@ -40,13 +45,23 @@ WHERE xe.name = 'Ring Buffer - Track Waits';
 ---------------------------------------------------------------
 
 --Copy the XML into tha temp table (run once). It should have only 1 row 
-SELECT CAST(target_data as xml) AS targetdata
-INTO #capture_waits_data
-FROM sys.dm_xe_session_targets xet
-JOIN sys.dm_xe_sessions xes
-    ON xes.address = xet.event_session_address
-WHERE xes.name = 'Ring Buffer - Track Waits'
-  AND xet.target_name = 'ring_buffer';
+--DROP TABLE #capture_waits_data; 
+DECLARE @SessionName sysname;
+SET @SessionName = 'Test4';
+
+SELECT 
+	CAST(target_data as xml) AS targetdata
+INTO  #capture_waits_data
+FROM 
+	sys.dm_xe_session_targets xet
+	JOIN sys.dm_xe_sessions xes
+		ON xes.address = xet.event_session_address
+WHERE 
+	xes.name = @SessionName
+	AND xet.target_name = 'ring_buffer';
+
+-- Remove queries who deosn't bring any value
+DELETE
 
 SELECT * 
 FROM #capture_waits_data;
@@ -59,9 +74,64 @@ FROM #capture_waits_data
   CROSS APPLY targetdata.nodes('//RingBufferTarget/event') AS xed (event_data);
   */
 
-  SELECT xed.event_data.value('(@timestamp)[1]', 'datetime2') AS [timestamp],
-  xed.event_data.value('(data[@name="wait_type"]/text)[1]', 'varchar(25)') AS wait_type, 
-  xed.event_data.value('(data[@name="duration"]/value)[1]', 'int') AS wait_type_duration_ms, 
-  xed.event_data.value('(data[@name="signal_duration"]/value)[1]', 'int') AS wait_type_signal_duration_ms 
+  --Show Waittype but NOT the actual SQL Command
+  -- granularity: a row for each query 
+  SELECT 
+	  xed.event_data.value('(@timestamp)[1]', 'datetime2') AS [timestamp],
+	  xed.event_data.value('(data[@name="statement"]/value)[1]', 'varchar(4000)') AS sql_command,
+	  xed.event_data.value('(data[@name="wait_type"]/text)[1]', 'varchar(25)') AS wait_type, 
+	  xed.event_data.value('(data[@name="duration"]/value)[1]', 'int') AS wait_type_duration_ms, 
+	  xed.event_data.value('(data[@name="signal_duration"]/value)[1]', 'int') AS wait_type_signal_duration_ms, 
+	  xed.event_data.value('(data[@name="physical_reads"]/value)[1]', 'int') AS physical_reads, 
+	  xed.event_data.value('(data[@name="logical_reads"]/value)[1]', 'int') AS  logical_reads, 
+	  xed.event_data.value('(data[@name="wait_type"]/text)[1]', 'varchar(25)') AS wait_type, 
+	  xed.event_data.value('(action[@name="query_plan_hash"]/value)[1]', 'varchar(50)') AS query_plan_hash 
+
 FROM #capture_waits_data
-  CROSS APPLY targetdata.nodes('//RingBufferTarget/event') AS xed (event_data);
+  CROSS APPLY targetdata.nodes('//RingBufferTarget/event') AS xed (event_data)
+--WHERE xed.event_data.value('(data[@name="statement"]/value)[1]', 'varchar(4000)') 
+--	NOT IN ('SELECT @@SPID');
+
+-- Group all queries by wait type
+ SELECT xei.wait_type, 
+  COUNT(xei.wait_type) AS count_wait_type, 
+  SUM(xei.wait_type_duration_ms) AS sum_wait_type_duration_ms, 
+  SUM(xei.wait_type_signal_duration_ms) AS sum_wait_type_signal_duration_ms 
+FROM 
+  (SELECT xed.event_data.value('(@timestamp)[1]', 'datetime2') AS [timestamp],
+    xed.event_data.value('(data[@name="wait_type"]/text)[1]', 'varchar(25)') AS wait_type, 
+    xed.event_data.value('(data[@name="duration"]/value)[1]', 'int') AS wait_type_duration_ms, 
+    xed.event_data.value('(data[@name="signal_duration"]/value)[1]', 'int') AS wait_type_signal_duration_ms 
+  FROM #capture_waits_data
+    CROSS APPLY targetdata.nodes('//RingBufferTarget/event') AS xed (event_data)) AS xei 
+GROUP BY xei.wait_type
+ORDER BY SUM(xei.wait_type_duration_ms) DESC;
+
+
+---ANother example from MSSQL Tips
+-- Warning 
+
+WITH cte AS 
+(
+  SELECT ed = CONVERT(XML, target_data) 
+    FROM sys.dm_xe_session_targets xet
+    INNER JOIN sys.dm_xe_sessions xe
+    ON xe.[address] = xet.event_session_address
+   WHERE xe.name = 'Ring Buffer - Track Waits'
+  AND xet.target_name = 'ring_buffer'
+)
+SELECT event_data = x.ed.query('.') 
+  INTO #t
+  FROM cte
+  CROSS APPLY cte.ed.nodes(N'RingBufferTarget/event') AS x(ed);
+
+SELECT 
+  ts    = event_data.value(N'(event/@timestamp)[1]', N'datetime'),
+  [sql] = event_data.value(N'(event/action[@name="sql_text"]/value)[1]', N'nvarchar(max)'),
+  spid  = event_data.value(N'(event/action[@name="session_id"]/value)[1]', N'int')
+FROM #t
+WHERE
+  event_data.value(N'(event/@name)[1]', N'sysname') = N'error_reported'
+  AND event_data.value(N'(event/data[@name="severity"]/value)[1]', N'int') = 20;
+
+SELECT * FROM #t
